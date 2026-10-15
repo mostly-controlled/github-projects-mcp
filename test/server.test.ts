@@ -1,8 +1,29 @@
-import test from 'node:test'; import assert from 'node:assert/strict'; import {listProjects,getProject,listItems,makeGraphql,makeWatsonGraphql} from '../src/github.ts';
-test('native App auth invokes installation token flow',async()=>{let requested='';let authCalls=0;const g=makeGraphql({GITHUB_APP_ID:'1',GITHUB_APP_PRIVATE_KEY:'key',GITHUB_INSTALLATION_ID:'2'},async(_url,init)=>{assert.equal((init?.headers as Record<string,string>).authorization,'bearer app-token');return new Response(JSON.stringify({data:{organization:{projectsV2:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}}),{status:200});},undefined,(_opts:any)=>{authCalls++;return async(args:any)=>{requested=args.type;return {token:'app-token'};};});await listProjects(g,'acme');assert.equal(authCalls,1);assert.equal(requested,'installation');});
-test('graphql awaits injectable token provider',async()=>{let calls=0;const g=makeGraphql({},async(_url,init)=>{assert.equal((init?.headers as Record<string,string>).authorization,'bearer short-lived-test-token');return new Response(JSON.stringify({data:{organization:{projectsV2:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}}),{status:200});},async()=>{calls++;return 'short-lived-test-token';});await listProjects(g,'acme');assert.equal(calls,1);});
-test('child bridge reports missing executable safely',async()=>{await assert.rejects(()=>listProjects(makeWatsonGraphql('/definitely/missing/watson-gh'),'acme'),/watson-gh unavailable/)});
-test('projects preserve pagination',async()=>{const g=async()=>({organization:{projectsV2:{nodes:[{number:1}],pageInfo:{hasNextPage:true,endCursor:'abc'}}}});assert.deepEqual(await listProjects(g,'acme'),{nodes:[{number:1}],pageInfo:{hasNextPage:true,endCursor:'abc'}})});
-test('missing project is explicit',async()=>{await assert.rejects(()=>getProject(async()=>({organization:{projectV2:null}}),'acme',9),/not found or not visible/)});
-test('permission errors and redacted content are preserved',async()=>{const g=async()=>({organization:{projectV2:{items:{nodes:[{content:null,fieldValues:{nodes:[]}}],pageInfo:{hasNextPage:false,endCursor:null}}}}});assert.equal((await listItems(g,'acme',1)).nodes[0].content,null);await assert.rejects(()=>listItems(async()=>{throw new Error('Resource not accessible by integration')},'acme',1),/permission denied/)});
-test('graphql timeout is surfaced',async()=>{await assert.rejects(()=>listProjects(async()=>{throw new Error('timeout')},'acme'),/timed out/)});
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {listProjects, getProject, listItems, makeGraphql, makeWatsonGraphql} from '../src/github.ts';
+
+test('native App auth invokes installation token flow', async () => {
+  let requested = ''; let authCalls = 0;
+  const g = makeGraphql({GITHUB_APP_ID:'1', GITHUB_APP_PRIVATE_KEY:'key', GITHUB_INSTALLATION_ID:'2'}, async (_url, init) => {
+    assert.equal((init?.headers as Record<string, string>).authorization, 'bearer app-token');
+    return new Response(JSON.stringify({data:{organization:{projectsV2:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}}), {status:200});
+  }, undefined, (_opts:any) => { authCalls++; return async (args:any) => { requested = args.type; return {token:'app-token'}; }; });
+  await listProjects(g, 'acme'); assert.equal(authCalls, 1); assert.equal(requested, 'installation');
+});
+test('graphql awaits injectable token provider', async () => { let calls = 0; const g = makeGraphql({}, async (_url, init) => { assert.equal((init?.headers as Record<string,string>).authorization, 'bearer short-lived-test-token'); return new Response(JSON.stringify({data:{organization:{projectsV2:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}}), {status:200}); }, async () => { calls++; return 'short-lived-test-token'; }); await listProjects(g, 'acme'); assert.equal(calls, 1); });
+test('child bridge reports missing executable safely', async () => { await assert.rejects(() => listProjects(makeWatsonGraphql('/definitely/missing/watson-gh'), 'acme'), /watson-gh unavailable/); });
+test('projects preserve pagination', async () => { const g = async () => ({organization:{projectsV2:{nodes:[{number:1}],pageInfo:{hasNextPage:true,endCursor:'abc'}}}}); assert.deepEqual(await listProjects(g, 'acme'), {nodes:[{number:1}],pageInfo:{hasNextPage:true,endCursor:'abc'}}); });
+test('missing project is explicit', async () => { await assert.rejects(() => getProject(async () => ({organization:{projectV2:null}}), 'acme', 9), /not found or not visible/); });
+test('permission errors and redacted content are preserved', async () => { const g = async () => ({organization:{projectV2:{items:{nodes:[{content:null,fieldValues:{nodes:[]}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}); assert.equal((await listItems(g, 'acme', 1)).nodes[0].content, null); await assert.rejects(() => listItems(async () => { throw new Error('Resource not accessible by integration'); }, 'acme', 1), /permission denied/); });
+test('item field values retain association and nested pagination', async () => {
+  const g = async () => ({
+    organization: { projectV2: { items: {
+      nodes: [{fieldValues: {nodes: [{id:'value-1', name:'Todo', field:{id:'field-1', name:'Status'}}], pageInfo:{hasNextPage:true, endCursor:'field-cursor'}}}],
+      pageInfo: {hasNextPage:false, endCursor:null}
+    }}}
+  });
+  const result = await listItems(g, 'acme', 1);
+  assert.deepEqual(result.nodes[0].fieldValues.pageInfo, {hasNextPage:true, endCursor:'field-cursor'});
+  assert.deepEqual(result.nodes[0].fieldValues.nodes[0].field, {id:'field-1', name:'Status'});
+});
+test('graphql timeout is surfaced', async () => { await assert.rejects(() => listProjects(async () => { throw new Error('timeout'); }, 'acme'), /timed out/); });
