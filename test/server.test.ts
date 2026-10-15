@@ -1,6 +1,46 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {listProjects, getProject, listItems, makeGraphql, makeWatsonGraphql} from '../src/github.ts';
+import {listProjects, getProject, listItems, makeGraphql, makeWatsonGraphql, addProjectV2ItemById, updateProjectV2ItemFieldValue, deleteProjectV2Item} from '../src/github.ts';
+
+const writeEnv = {GITHUB_PROJECTS_V2_WRITE_ENABLED:'true', GITHUB_PROJECTS_V2_WRITE_ALLOWLIST:'[{"organization":"acme","projectId":"PVT_1"}]'};
+test('project writes are disabled and fail closed by default', async () => {
+  let calls = 0; const g = async () => { calls++; return {}; };
+  await assert.rejects(() => addProjectV2ItemById(g, {}, 'acme', 'PVT_1', 'I_1'), /disabled/);
+  await assert.rejects(() => addProjectV2ItemById(g, {...writeEnv, GITHUB_PROJECTS_V2_WRITE_ALLOWLIST:'bad'}, 'acme', 'PVT_1', 'I_1'), /allowlist/);
+  assert.equal(calls, 0);
+});
+test('project writes enforce exact organization and project allowlist', async () => {
+  const g = async () => { throw new Error('must not call'); };
+  await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'other', 'PVT_1', 'I_1'), /not allowlisted/);
+  await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_2', 'I_1'), /not allowlisted/);
+});
+test('allowed project writes use the expected GraphQL mutations', async () => {
+  const seen:string[] = []; const g = async (query:string, variables:any) => { seen.push(query); assert.equal(variables.projectId, 'PVT_1'); if (query.startsWith('query')) return {node:{items:{nodes:[{id:'I_1',content:{id:'OTHER'}}]}}}; return {addProjectV2ItemById:{item:{id:'I_1'},errors:[]},updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'},errors:[]},deleteProjectV2Item:{deletedItemId:'I_1',errors:[]}}; };
+  await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'CONTENT_1');
+  await updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', {text:'Todo'});
+  await deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1');
+  assert.equal(seen.length, 5); assert.match(seen[1], /addProjectV2ItemById/); assert.match(seen[2], /updateProjectV2ItemFieldValue/); assert.match(seen[4], /deleteProjectV2Item/);
+});
+test('repeated add returns the existing item without a second mutation', async () => {
+  let mutations = 0; const g = async (query:string) => query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'CONTENT_1'}}]}}} : (mutations++, {});
+  const result = await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'CONTENT_1');
+  assert.deepEqual(result, {item:{id:'I_1',content:{id:'CONTENT_1'}},errors:[],alreadyExists:true}); assert.equal(mutations, 0);
+});
+test('repeated delete of an absent item is a safe no-op', async () => {
+  let mutations = 0; const g = async (query:string) => query.startsWith('query') ? {node:{items:{nodes:[]}}} : (mutations++, {});
+  const result = await deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1');
+  assert.deepEqual(result, {deletedItemId:'I_1',errors:[],alreadyAbsent:true}); assert.equal(mutations, 0);
+});
+test('write validation rejects empty ids and ambiguous field values', async () => {
+  const g = async () => ({});
+  await assert.rejects(() => addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', ''), /contentId/);
+  await assert.rejects(() => updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I', 'F', {text:'x',number:1}), /Exactly one/);
+});
+test('GraphQL mutation errors are surfaced without retrying', async () => {
+  let calls = 0; const g = async (query:string) => query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'C'}}]}}} : (calls++, {deleteProjectV2Item:{errors:[{message:'forbidden'}]}});
+  await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1'), /permission denied|forbidden/);
+  assert.equal(calls, 1);
+});
 
 test('native App auth invokes installation token flow', async () => {
   let requested = ''; let authCalls = 0;

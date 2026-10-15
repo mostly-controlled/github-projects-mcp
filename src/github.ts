@@ -30,3 +30,42 @@ export function makeGraphql(env: NodeJS.ProcessEnv = process.env, fetcher: typeo
 export async function listProjects(g:Graphql,organization:string,cursor?:string){try{const d=await g(`query($org:String!,$cursor:String){organization(login:$org){projectsV2(first:50,after:$cursor){nodes{${PROJECT}}pageInfo{hasNextPage endCursor}}}}`,{org:organization,cursor:cursor??null});return page(d.organization.projectsV2);}catch(e){throw graphQLError(e);}}
 export async function getProject(g:Graphql,organization:string,number:number){try{const d=await g(`query($org:String!,$number:Int!){organization(login:$org){projectV2(number:$number){${PROJECT}}}}`,{org:organization,number});if(!d.organization.projectV2)throw new Error('Project not found or not visible');return d.organization.projectV2;}catch(e){throw graphQLError(e);}}
 export async function listItems(g:Graphql,organization:string,number:number,cursor?:string){try{const query=`query($org:String!,$number:Int!,$cursor:String){organization(login:$org){projectV2(number:$number){items(first:50,after:$cursor){nodes{id type content{__typename ... on Issue{number title url repository{name url}} ... on PullRequest{number title url repository{name url}}} fieldValues(first:50){nodes{__typename ... on ProjectV2ItemFieldSingleSelectValue{id name field{__typename ... on ProjectV2FieldCommon{id name} ... on ProjectV2IterationField{id name} ... on ProjectV2SingleSelectField{id name}}} ... on ProjectV2ItemFieldTextValue{id text field{__typename ... on ProjectV2FieldCommon{id name} ... on ProjectV2IterationField{id name} ... on ProjectV2SingleSelectField{id name}}} ... on ProjectV2ItemFieldNumberValue{id number field{__typename ... on ProjectV2FieldCommon{id name} ... on ProjectV2IterationField{id name} ... on ProjectV2SingleSelectField{id name}}}} pageInfo{hasNextPage endCursor}}} pageInfo{hasNextPage endCursor}}}}}`;const d=await g(query,{org:organization,number,cursor:cursor??null});if(!d.organization.projectV2)throw new Error('Project not found or not visible');return page(d.organization.projectV2.items);}catch(e){throw graphQLError(e);}}
+
+type WriteConfig = {organization:string; projectId:string}[];
+export function writeConfig(env:NodeJS.ProcessEnv = process.env): WriteConfig {
+  if (env.GITHUB_PROJECTS_V2_WRITE_ENABLED !== 'true') throw new Error('Project writes are disabled');
+  try {
+    const parsed = JSON.parse(env.GITHUB_PROJECTS_V2_WRITE_ALLOWLIST ?? '');
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((x:any) => !x || typeof x.organization !== 'string' || !x.organization || typeof x.projectId !== 'string' || !x.projectId)) throw new Error();
+    return parsed;
+  } catch { throw new Error('Project write allowlist is missing or invalid'); }
+}
+function authorizeWrite(env:NodeJS.ProcessEnv, organization:string, projectId:string) {
+  if (!organization || !projectId || !writeConfig(env).some(x => x.organization === organization && x.projectId === projectId)) throw new Error('Project write target is not allowlisted');
+}
+async function mutation(g:Graphql, query:string, variables:Variables, name:string) {
+  try { const d = await g(query, variables); const errors = d?.[name]?.errors; if (errors?.length) throw new Error(errors.map((e:any)=>e.message).join('; ')); return d?.[name]; } catch (e) { throw graphQLError(e); }
+}
+async function projectItems(g:Graphql, projectId:string) {
+  try {
+    const d = await g('query($projectId:ID!){node(id:$projectId){... on ProjectV2 {items(first:100){nodes{id content{id}}}}}}', {projectId});
+    return d?.node?.items?.nodes ?? [];
+  } catch (e) { throw graphQLError(e); }
+}
+export async function addProjectV2ItemById(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string, contentId:string) {
+  authorizeWrite(env, organization, projectId); if (!contentId) throw new Error('contentId is required');
+  const existing = (await projectItems(g, projectId)).find((item:any) => item.content?.id === contentId);
+  if (existing) return {item:existing, errors:[], alreadyExists:true};
+  return mutation(g, 'mutation($projectId:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){item{id} errors{message}}}', {projectId,contentId}, 'addProjectV2ItemById');
+}
+export async function updateProjectV2ItemFieldValue(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string, itemId:string, fieldId:string, value:{text?:string;number?:number;singleSelectOptionId?:string;iterationId?:string}) {
+  authorizeWrite(env, organization, projectId); if (!itemId || !fieldId || !value || Object.keys(value).length !== 1) throw new Error('Exactly one field value is required');
+  const key = Object.keys(value)[0]; if (!['text','number','singleSelectOptionId','iterationId'].includes(key)) throw new Error('Unsupported field value');
+  return mutation(g, 'mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$value:ProjectV2FieldValueInput!){updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:$value}){projectV2Item{id} errors{message}}}', {projectId,itemId,fieldId,value}, 'updateProjectV2ItemFieldValue');
+}
+export async function deleteProjectV2Item(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string, itemId:string) {
+  authorizeWrite(env, organization, projectId); if (!itemId) throw new Error('itemId is required');
+  const existing = (await projectItems(g, projectId)).find((item:any) => item.id === itemId);
+  if (!existing) return {deletedItemId:itemId, errors:[], alreadyAbsent:true};
+  return mutation(g, 'mutation($projectId:ID!,$itemId:ID!){deleteProjectV2Item(input:{projectId:$projectId,itemId:$itemId}){deletedItemId errors{message}}}', {projectId,itemId}, 'deleteProjectV2Item');
+}
