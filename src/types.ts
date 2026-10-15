@@ -1,0 +1,4 @@
+export type Variables = Record<string, unknown>;
+export type Graphql = (query: string, variables: Variables) => Promise<any>;
+export function graphQLError(error: unknown): Error { const message = error instanceof Error ? error.message : String(error); if (/forbidden|permission|resource not accessible|bad credentials/i.test(message)) return new Error(`GitHub Projects permission denied: ${message}`); if (/timeout|timed out|abort/i.test(message)) return new Error(`GitHub request timed out: ${message}`); return new Error(`GitHub GraphQL request failed: ${message}`); }
+export function page<T>(connection: {nodes?: T[]; pageInfo?: {hasNextPage: boolean; endCursor?: string|null}}) { return {nodes: connection.nodes ?? [], pageInfo: {hasNextPage:Boolean(connection.pageInfo?.hasNextPage), endCursor:connection.pageInfo?.endCursor ?? null}}; }
