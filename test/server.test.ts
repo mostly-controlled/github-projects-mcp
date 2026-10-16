@@ -69,3 +69,21 @@ test('item field values retain association and nested pagination', async () => {
   assert.deepEqual(result.nodes[0].fieldValues.nodes[0].field, {id:'field-1', name:'Status'});
 });
 test('graphql timeout is surfaced', async () => { await assert.rejects(() => listProjects(async () => { throw new Error('timeout'); }, 'acme'), /timed out/); });
+
+test('projectItems query uses literal variables and paginates beyond 100 items', async () => {
+  const queries:string[] = []; const cursors:(string|null)[] = []; let call = 0;
+  const g = async (query:string, variables:any) => { queries.push(query); cursors.push(variables.cursor); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}}; assert.match(query, /query\(\$projectId:ID!,\$cursor:String\)/); assert.doesNotMatch(query, /\\\$projectId|\\\$cursor/); call++; return {node:{items:{nodes:Array.from({length:100},(_,i)=>({id:`I${(call-1)*100+i}`,content:call===3&&i===0?{id:'missing'}:undefined})),pageInfo:{hasNextPage:call<3,endCursor:call<3?`c${call}`:null}}}}; };
+  await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'missing');
+  assert.deepEqual(cursors, [null, null, 'c1', 'c2']); assert.equal(queries.length, 4);
+});
+test('project authorization paginates beyond 100 projects and rejects owner mismatch', async () => {
+  let page = 0; const g = async (_query:string, variables:any) => { page++; assert.equal(variables.cursor, page === 1 ? null : 'p1'); return {organization:{projectsV2:{nodes:page === 1 ? Array.from({length:100},(_,i)=>({id:`P${i}`,owner:{login:'acme'}})) : [{id:'PVT_1',owner:{login:'other'}}],pageInfo:{hasNextPage:page===1,endCursor:page===1?'p1':null}}}}; };
+  await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1'), /not visible/);
+});
+test('null mutation payloads and invalid field values are rejected', async () => {
+  const base = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.includes('fields(first:100)') ? {node:{fields:{nodes:[{id:'F_1',options:[{id:'O_1'}]}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : {updateProjectV2ItemFieldValue:null};
+  await assert.rejects(() => updateProjectV2ItemFieldValue(base, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', {singleSelectOptionId:'O_2'}), /not valid/);
+  await assert.rejects(() => updateProjectV2ItemFieldValue(base, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_2', {text:'x'}), /not a field/);
+  const nullPayload = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}} : {addProjectV2ItemById:null};
+  await assert.rejects(() => addProjectV2ItemById(nullPayload, writeEnv, 'acme', 'PVT_1', 'C_1'), /no payload/);
+});
