@@ -10,6 +10,6 @@ Uses the official MCP TypeScript SDK over stdio and GitHub Projects v2 GraphQL. 
 
 Tools: `list_projects(organization, cursor?)`, `get_project(organization, number)`, and `list_project_items(organization, number, cursor?)`. Responses include `pageInfo`; inaccessible/redacted content remains null and GraphQL permission/errors are returned as MCP errors.
 
-Run locally: `npm install && npm test && npm run build && npm start`. A real read requires an existing installation with the GitHub Projects permission; this repository does not change app permissions or include credentials. Tests use mocks only; no live write tests are included.
+Run locally: `npm install && npm test && npm run build && npm start`. A real read requires an existing installation with the GitHub Projects permission; this repository does not change app permissions or include credentials. Tests use mocks only; no live write tests are included. The write runtime is not validated against live GitHub.
 
 MIT licensed. See [LICENSE](LICENSE).
