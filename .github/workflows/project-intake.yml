@@ -1,0 +1,30 @@
+name: Add new issues to organization project
+
+on:
+  issues:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  project-intake:
+    if: ${{ vars.PROJECT_INTAKE_APP_CLIENT_ID != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Mint scoped intake App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PROJECT_INTAKE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROJECT_INTAKE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-organization-projects: write
+          permission-issues: read
+
+      - name: Add issue if absent
+        uses: actions/add-to-project@v2.0.0
+        with:
+          project-url: https://github.com/orgs/mostly-controlled/projects/1
+          github-token: ${{ steps.app-token.outputs.token }}
