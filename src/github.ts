@@ -5,6 +5,7 @@ import {graphQLError, page, type Graphql, type Variables} from './types.js';
 const PROJECT = `id number title url shortDescription closed fields(first:100){nodes{__typename ... on ProjectV2FieldCommon{id name dataType} ... on ProjectV2IterationField{id name} ... on ProjectV2SingleSelectField{id name options{id name}}} pageInfo{hasNextPage endCursor}}`;
 const CHILD_TIMEOUT_MS = 15000;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_PAGES = 100;
 export type TokenProvider = () => Promise<string>;
 export type AppAuthFactory = typeof createAppAuth;
 
@@ -44,28 +45,26 @@ function authorizeWrite(env:NodeJS.ProcessEnv, organization:string, projectId:st
   if (!organization || !projectId || !writeConfig(env).some(x => x.organization === organization && x.projectId === projectId)) throw new Error('Project write target is not allowlisted');
 }
 async function mutation(g:Graphql, query:string, variables:Variables, name:string) {
-  try { const d = await g(query, variables); const errors = d?.[name]?.errors; if (errors?.length) throw new Error(errors.map((e:any)=>e.message).join('; ')); return d?.[name]; } catch (e) { throw graphQLError(e); }
+  try { const d = await g(query, variables); const payload = d?.[name]; if (!payload) throw new Error(`${name} returned no payload`); const errors = payload.errors; if (errors?.length) throw new Error(errors.map((e:any)=>e.message).join('; ')); return payload; } catch (e) { throw graphQLError(e); }
 }
 async function projectItems(g:Graphql, projectId:string) {
-  try { const nodes:any[] = []; let cursor:string|null = null; do { const d = await g("query(\:ID!,\:String){node(id:\){... on ProjectV2 {items(first:100,after:\){nodes{id content{id}} pageInfo{hasNextPage endCursor}}}}}", {projectId,cursor}); if (!d?.node?.items) throw new Error("Project not found or not visible"); nodes.push(...(d.node.items.nodes ?? [])); cursor = d.node.items.pageInfo?.hasNextPage ? d.node.items.pageInfo.endCursor : null; } while (cursor); return nodes; } catch (e) { throw graphQLError(e); }
+  try { const nodes:any[]=[]; let cursor:string|null=null; for(let n=0;n<MAX_PAGES;n++){ const d=await g("query($projectId:ID!,$cursor:String){node(id:$projectId){... on ProjectV2 {items(first:100,after:$cursor){nodes{id content{id}} pageInfo{hasNextPage endCursor}}}}}",{projectId,cursor}); const items=d?.node?.items; if(!items) throw new Error('Project not found or not visible'); nodes.push(...(items.nodes??[])); const next=items.pageInfo?.hasNextPage?items.pageInfo.endCursor:null; if(next&&next===cursor) throw new Error('Project item pagination cursor did not advance'); cursor=next; if(!cursor)return nodes; } throw new Error('Project item pagination exceeded limit'); } catch(e){throw graphQLError(e);}
 }
-async function authorizeProject(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string) {
-  authorizeWrite(env, organization, projectId); const d = await g("query(\:String!){organization(login:\){projectsV2(first:100){nodes{id}}}}", {org:organization}); if (!d?.organization?.projectsV2?.nodes?.some((p:any)=>p.id === projectId)) throw new Error("Project is not visible in the requested organization");
-}
+async function authorizeProject(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string) { authorizeWrite(env,organization,projectId); let cursor:string|null=null; for(let n=0;n<MAX_PAGES;n++){ const d=await g("query($org:String!,$cursor:String){organization(login:$org){projectsV2(first:100,after:$cursor){nodes{id owner{... on Organization{login}}} pageInfo{hasNextPage endCursor}}}}",{org:organization,cursor}); const projects=d?.organization?.projectsV2; if(!projects) throw new Error('Organization not found or not visible'); const match=(projects.nodes??[]).find((p:any)=>p.id===projectId); if(match&&(!match.owner || match.owner.login===organization))return; const next=projects.pageInfo?.hasNextPage?projects.pageInfo.endCursor:null; if(next&&next===cursor)throw new Error('Project authorization pagination cursor did not advance'); cursor=next;if(!cursor)break;} throw new Error('Project is not visible in the requested organization'); }
 export async function addProjectV2ItemById(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string, contentId:string) {
   await authorizeProject(g, env, organization, projectId); if (!contentId) throw new Error('contentId is required');
   const existing = (await projectItems(g, projectId)).find((item:any) => item.content?.id === contentId);
   if (existing) return {item:existing, errors:[], alreadyExists:true};
-  return mutation(g, 'mutation($projectId:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){item{id}}}', {projectId,contentId}, 'addProjectV2ItemById');
+  const result=await mutation(g,'mutation($projectId:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){item{id} errors{message}}}',{projectId,contentId},'addProjectV2ItemById'); if(!result.item?.id)throw new Error('addProjectV2ItemById returned no item'); const confirmed=(await projectItems(g,projectId)).find((x:any)=>x.id===result.item.id); if(!confirmed)throw new Error('addProjectV2ItemById could not be confirmed'); return {...result,item:confirmed};
 }
 export async function updateProjectV2ItemFieldValue(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string, itemId:string, fieldId:string, value:{text?:string;number?:number;singleSelectOptionId?:string;iterationId?:string}) {
   await authorizeProject(g, env, organization, projectId); if (!itemId || !fieldId || !value || Object.keys(value).length !== 1) throw new Error('Exactly one field value is required');
   const key = Object.keys(value)[0]; if (!['text','number','singleSelectOptionId','iterationId'].includes(key)) throw new Error('Unsupported field value');
-  return mutation(g, 'mutation($input:UpdateProjectV2ItemFieldValueInput!){updateProjectV2ItemFieldValue(input:$input){projectV2Item{id}}}', {input:{projectId,itemId,fieldId,value}}, 'updateProjectV2ItemFieldValue');
+  const fields=await g('query($projectId:ID!){node(id:$projectId){... on ProjectV2 {fields(first:100){nodes{... on ProjectV2FieldCommon{id} ... on ProjectV2IterationField{id} ... on ProjectV2SingleSelectField{id options{id}}}}}}}',{projectId}); const field=(fields?.node?.fields?.nodes??[]).find((f:any)=>f.id===fieldId); if(!field) throw new Error('fieldId is not a field on this project'); if(value.singleSelectOptionId && !(field.options??[]).some((o:any)=>o.id===value.singleSelectOptionId)) throw new Error('singleSelectOptionId is not valid for this field'); const result=await mutation(g,'mutation($input:UpdateProjectV2ItemFieldValueInput!){updateProjectV2ItemFieldValue(input:$input){projectV2Item{id} errors{message}}}',{input:{projectId,itemId,fieldId,value}},'updateProjectV2ItemFieldValue'); if(!result.projectV2Item?.id) throw new Error('updateProjectV2ItemFieldValue returned no item'); const confirmed=(await projectItems(g,projectId)).find((x:any)=>x.id===itemId); if(!confirmed) throw new Error('updated item could not be confirmed'); return result;
 }
 export async function deleteProjectV2Item(g:Graphql, env:NodeJS.ProcessEnv, organization:string, projectId:string, itemId:string) {
   await authorizeProject(g, env, organization, projectId); if (!itemId) throw new Error('itemId is required');
   const existing = (await projectItems(g, projectId)).find((item:any) => item.id === itemId);
   if (!existing) return {deletedItemId:itemId, errors:[], alreadyAbsent:true};
-  return mutation(g, 'mutation($projectId:ID!,$itemId:ID!){deleteProjectV2Item(input:{projectId:$projectId,itemId:$itemId}){deletedItemId}}', {projectId,itemId}, 'deleteProjectV2Item');
+  const result=await mutation(g,'mutation($projectId:ID!,$itemId:ID!){deleteProjectV2Item(input:{projectId:$projectId,itemId:$itemId}){deletedItemId errors{message}}}',{projectId,itemId},'deleteProjectV2Item'); if(result.deletedItemId!==itemId) throw new Error('deleteProjectV2Item returned unexpected item'); const confirmed=(await projectItems(g,projectId)).find((x:any)=>x.id===itemId); if(confirmed) throw new Error('deleteProjectV2Item could not be confirmed'); return result;
 }

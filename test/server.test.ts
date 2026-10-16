@@ -17,11 +17,11 @@ test('project writes enforce exact organization and project allowlist', async ()
   await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_2', 'I_1'), /not allowlisted/);
 });
 test('allowed project writes use the expected GraphQL mutations', async () => {
-  const seen:string[] = []; const g = async (query:string, variables:any) => { seen.push(query); if (variables.projectId) assert.equal(variables.projectId, 'PVT_1'); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1'}]}}}; if (query.startsWith('query')) return {node:{items:{nodes:[{id:'I_1',content:{id:'OTHER'}}]}}}; return {addProjectV2ItemById:{item:{id:'I_1'},errors:[]},updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'},errors:[]},deleteProjectV2Item:{deletedItemId:'I_1',errors:[]}}; };
+  const seen:string[] = []; let deleted=false; const g = async (query:string, variables:any) => { seen.push(query); if (variables.projectId) assert.equal(variables.projectId, 'PVT_1'); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1'}]}}}; if (query.includes('fields(first:100)')) return {node:{fields:{nodes:[{id:'F_1'}]}}}; if (query.startsWith('query')) return {node:{items:{nodes:deleted?[]:[{id:'I_1',content:{id:'OTHER'}}]}}}; if (query.includes('deleteProjectV2Item')) deleted=true; return {addProjectV2ItemById:{item:{id:'I_1'},errors:[]},updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'},errors:[]},deleteProjectV2Item:{deletedItemId:'I_1',errors:[]}}; };
   await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'CONTENT_1');
   await updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', {text:'Todo'});
   await deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1');
-  assert.equal(seen.length, 8); assert.match(seen[2], /addProjectV2ItemById/); assert.match(seen[4], /updateProjectV2ItemFieldValue/); assert.match(seen[7], /deleteProjectV2Item/);
+  assert.equal(seen.length, 12); assert.match(seen[2], /addProjectV2ItemById/); assert.match(seen[4], /updateProjectV2ItemFieldValue/); assert.match(seen[7], /deleteProjectV2Item/);
 });
 test('repeated add returns the existing item without a second mutation', async () => {
   let mutations = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}]}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'CONTENT_1'}}]}}} : (mutations++, {});
