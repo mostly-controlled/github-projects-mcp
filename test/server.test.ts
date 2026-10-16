@@ -17,29 +17,29 @@ test('project writes enforce exact organization and project allowlist', async ()
   await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_2', 'I_1'), /not allowlisted/);
 });
 test('allowed project writes use the expected GraphQL mutations', async () => {
-  const seen:string[] = []; let deleted=false; const g = async (query:string, variables:any) => { seen.push(query); if (variables.projectId) assert.equal(variables.projectId, 'PVT_1'); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}}; if (query.includes('fields(first:100)')) return {node:{fields:{nodes:[{id:'F_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}}; if (query.startsWith('query')) return {node:{items:{nodes:deleted?[]:[{id:'I_1',content:{id:'OTHER'},fieldValues:{nodes:[{field:{id:'F_1'},text:'Todo'}],pageInfo:{hasNextPage:false,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}}; if (query.includes('deleteProjectV2Item')) deleted=true; return {addProjectV2ItemById:{item:{id:'I_1'},errors:[]},updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'},errors:[]},deleteProjectV2Item:{deletedItemId:'I_1',errors:[]}}; };
+  const seen:string[] = []; let deleted=false; const g = async (query:string, variables:any) => { seen.push(query); if (variables.projectId) assert.equal(variables.projectId, 'PVT_1'); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}}; if (query.includes('fields(first:100')) return {node:{fields:{nodes:[{id:'F_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}}; if (query.startsWith('query')) return {node:{items:{nodes:deleted?[]:[{id:'I_1',content:{id:'OTHER'},fieldValues:{nodes:[{field:{id:'F_1'},text:'Todo'}],pageInfo:{hasNextPage:false,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}}; if (query.includes('deleteProjectV2Item')) deleted=true; return {addProjectV2ItemById:{item:{id:'I_1'},errors:[]},updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'},errors:[]},deleteProjectV2Item:{deletedItemId:'I_1',errors:[]}}; };
   await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'CONTENT_1');
   await updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', {text:'Todo'});
   await deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1');
   assert.ok(seen.some(q => q.includes('addProjectV2ItemById'))); assert.ok(seen.some(q => q.includes('updateProjectV2ItemFieldValue'))); assert.ok(seen.some(q => q.includes('deleteProjectV2Item')));
 });
 test('repeated add returns the existing item without a second mutation', async () => {
-  let mutations = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'CONTENT_1'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : (mutations++, {});
+  let mutations = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'CONTENT_1'},fieldValues:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : (mutations++, {});
   const result = await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'CONTENT_1');
-  assert.deepEqual(result, {item:{id:'I_1',content:{id:'CONTENT_1'}},errors:[],alreadyExists:true}); assert.equal(mutations, 0);
+  assert.equal(result.alreadyExists, true); assert.equal(result.item.id, 'I_1'); assert.equal(mutations, 0);
 });
 test('repeated delete of an absent item is a safe no-op', async () => {
-  let mutations = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}} : (mutations++, {});
+  let mutations = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}} : (mutations++, {});
   const result = await deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1');
   assert.deepEqual(result, {deletedItemId:'I_1',errors:[],alreadyAbsent:true}); assert.equal(mutations, 0);
 });
 test('write validation rejects empty ids and ambiguous field values', async () => {
-  const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}]}}} : {};
+  const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : {};
   await assert.rejects(() => addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', ''), /contentId/);
   await assert.rejects(() => updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I', 'F', {text:'x',number:1}), /Exactly one/);
 });
 test('GraphQL mutation errors are surfaced without retrying', async () => {
-  let calls = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'C'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : (calls++, {deleteProjectV2Item:{errors:[{message:'forbidden'}]}});
+  let calls = 0; const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',content:{id:'C'},fieldValues:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : (calls++, {deleteProjectV2Item:{errors:[{message:'forbidden'}]}});
   await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1'), /permission denied|forbidden/);
   assert.equal(calls, 1);
 });
@@ -72,7 +72,7 @@ test('graphql timeout is surfaced', async () => { await assert.rejects(() => lis
 
 test('projectItems query uses literal variables and paginates beyond 100 items', async () => {
   const queries:string[] = []; const cursors:(string|null)[] = []; let call = 0;
-  const g = async (query:string, variables:any) => { queries.push(query); cursors.push(variables.cursor); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}}; assert.match(query, /query\(\$projectId:ID!,\$cursor:String\)/); assert.doesNotMatch(query, /\\\$projectId|\\\$cursor/); call++; return {node:{items:{nodes:Array.from({length:100},(_,i)=>({id:`I${(call-1)*100+i}`,content:call===3&&i===0?{id:'missing'}:undefined})),pageInfo:{hasNextPage:call<3,endCursor:call<3?`c${call}`:null}}}}; };
+  const g = async (query:string, variables:any) => { queries.push(query); cursors.push(variables.cursor); if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}}; assert.match(query, /query\(\$projectId:ID!,\$cursor:String\)/); assert.doesNotMatch(query, /\\\$projectId|\\\$cursor/); call++; return {node:{items:{nodes:Array.from({length:100},(_,i)=>({id:`I${(call-1)*100+i}`,content:call===3&&i===0?{id:'missing'}:undefined,fieldValues:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}})),pageInfo:{hasNextPage:call<3,endCursor:call<3?`c${call}`:null}}}}; };
   await addProjectV2ItemById(g, writeEnv, 'acme', 'PVT_1', 'missing');
   assert.deepEqual(cursors, [null, null, 'c1', 'c2']); assert.equal(queries.length, 4);
 });
@@ -81,9 +81,32 @@ test('project authorization paginates beyond 100 projects and rejects owner mism
   await assert.rejects(() => deleteProjectV2Item(g, writeEnv, 'acme', 'PVT_1', 'I_1'), /not visible/);
 });
 test('null mutation payloads and invalid field values are rejected', async () => {
-  const base = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.includes('fields(first:100)') ? {node:{fields:{nodes:[{id:'F_1',options:[{id:'O_1'}]}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : {updateProjectV2ItemFieldValue:null};
+  const base = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.includes('fields(first:100') ? {node:{fields:{nodes:[{id:'F_1',options:[{id:'O_1'}]}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[{id:'I_1',fieldValues:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : {updateProjectV2ItemFieldValue:null};
   await assert.rejects(() => updateProjectV2ItemFieldValue(base, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', {singleSelectOptionId:'O_2'}), /not valid/);
   await assert.rejects(() => updateProjectV2ItemFieldValue(base, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_2', {text:'x'}), /not a field/);
-  const nullPayload = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}} : {addProjectV2ItemById:null};
+  const nullPayload = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.startsWith('query') ? {node:{items:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}} : {addProjectV2ItemById:null};
   await assert.rejects(() => addProjectV2ItemById(nullPayload, writeEnv, 'acme', 'PVT_1', 'C_1'), /no payload/);
+});
+
+test('typed post-write verification covers status, iteration, text, number, and mismatch', async () => {
+  const run = async (value:any, actual:any, shouldPass=true) => {
+    const g = async (query:string) => {
+      if (query.includes('organization(login')) return {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}};
+      if (query.includes('fields(first:100')) return {node:{fields:{nodes:[{id:'F_1',options:[{id:'O_1'}]}],pageInfo:{hasNextPage:false,endCursor:null}}}};
+      if (query.includes('updateProjectV2ItemFieldValue')) return {updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'}}};
+      return {node:{items:{nodes:[{id:'I_1',fieldValues:{nodes:[{field:{id:'F_1'},...actual}],pageInfo:{hasNextPage:false,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}};
+    };
+    if (shouldPass) await updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', value);
+    else await assert.rejects(() => updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', value), /could not be confirmed/);
+  };
+  await run({singleSelectOptionId:'O_1'}, {optionId:'O_1'});
+  await run({iterationId:'IT_1'}, {iterationId:'IT_1'});
+  await run({text:'hello'}, {text:'hello'});
+  await run({number:42}, {number:42});
+  await run({singleSelectOptionId:'O_1'}, {optionId:'O_2'}, false);
+});
+
+test('nested field-value pagination is fail-closed during post-write verification', async () => {
+  const g = async (query:string) => query.includes('organization(login') ? {organization:{projectsV2:{nodes:[{id:'PVT_1',owner:{login:'acme'}}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.includes('fields(first:100') ? {node:{fields:{nodes:[{id:'F_1'}],pageInfo:{hasNextPage:false,endCursor:null}}}} : query.includes('updateProjectV2ItemFieldValue') ? {updateProjectV2ItemFieldValue:{projectV2Item:{id:'I_1'}}} : {node:{items:{nodes:[{id:'I_1',fieldValues:{nodes:[],pageInfo:{hasNextPage:true,endCursor:null}}}],pageInfo:{hasNextPage:false,endCursor:null}}}};
+  await assert.rejects(() => updateProjectV2ItemFieldValue(g, writeEnv, 'acme', 'PVT_1', 'I_1', 'F_1', {text:'x'}), /pagination is incomplete/);
 });
